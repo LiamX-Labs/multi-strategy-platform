@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  trade-sync-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: trade-sync-service
+    restart: unless-stopped
+
+    environment:
+      # PostgreSQL Configuration
+      POSTGRES_HOST: ${POSTGRES_HOST:-pgbouncer}
+      POSTGRES_PORT: ${POSTGRES_PORT:-6432}
+      POSTGRES_DB: ${POSTGRES_DB:-trading_db}
+      POSTGRES_USER: ${POSTGRES_USER:-trading_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+      # Bybit API Configuration
+      BYBIT_API_KEY: ${BYBIT_API_KEY}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET}
+      BYBIT_TESTNET: ${BYBIT_TESTNET:-false}
+
+      # Redis Configuration
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
+
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_FILE: /var/log/trade_sync_service/sync.log
+
+      # Monitoring (optional)
+      ENABLE_TELEGRAM_ALERTS: ${ENABLE_TELEGRAM_ALERTS:-false}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+
+    volumes:
+      - ./logs:/var/log/trade_sync_service
+      - ./config.py:/app/config.py:ro
+
+    networks:
+      - trading-network
+
+    depends_on:
+      - pgbouncer
+      - redis
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "main.py", "test"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 10s
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+networks:
+  trading-network:
+    external: true

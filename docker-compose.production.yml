@@ -1,0 +1,485 @@
+# ========================================
+# PRODUCTION DOCKER COMPOSE
+# PostgreSQL + Redis + WebSocket Listener
+# ========================================
+#
+# This is the PRODUCTION-READY docker-compose for the Alpha Trading System
+# Based on data.md specifications - uses PostgreSQL + Redis only
+# InfluxDB will be added in Phase 2
+#
+# Key Features:
+# - PostgreSQL for permanent fills/trades history
+# - Redis for live position state
+# - PgBouncer for connection pooling
+# - WebSocket Listener for Bybit streams (execution, order, position)
+# - All 3 trading bots (Shortseller, LXAlgo, Momentum)
+# - Telegram Command Center
+# - Automated backups
+#
+# Usage:
+#   docker-compose -f docker-compose.production.yml up -d
+#
+# ========================================
+
+version: '3.8'
+
+services:
+  # ========================================
+  # POSTGRESQL - Permanent Fills History
+  # ========================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Auto-run migrations on first start
+      - ./database/migrations/001_create_fills_schema.sql:/docker-entrypoint-initdb.d/001_create_fills_schema.sql:ro
+      - ./database/migrations/002_register_bots.sql:/docker-entrypoint-initdb.d/002_register_bots.sql:ro
+      - ./database/migrations/004_create_completed_trades_table.sql:/docker-entrypoint-initdb.d/004_create_completed_trades_table.sql:ro
+      # Backups
+      - ./database/backups/postgres:/backups
+    ports:
+      - "5433:5432"  # Changed from 5432 to avoid conflict with local PostgreSQL
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # PGBOUNCER - Connection Pooling
+  # ========================================
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: trading_pgbouncer
+    restart: unless-stopped
+    environment:
+      DATABASES_HOST: postgres
+      DATABASES_PORT: 5432
+      DATABASES_USER: trading_user
+      DATABASES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+      DATABASES_DBNAME: trading_db
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_MAX_CLIENT_CONN: 1000
+      PGBOUNCER_DEFAULT_POOL_SIZE: 25
+    ports:
+      - "6432:6432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ========================================
+  # REDIS - Live Position State
+  # ========================================
+  redis:
+    image: redis:7-alpine
+    container_name: trading_redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --requirepass ${REDIS_PASSWORD:-change_this_password}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+  # ========================================
+  # WEBSOCKET LISTENER - Bybit Private Streams
+  # ========================================
+  # This is THE CRITICAL SERVICE
+  # Listens to execution, order, position streams
+  # Updates PostgreSQL (fills) and Redis (live state)
+  websocket_listener:
+    build:
+      context: ./websocket_listener
+      dockerfile: Dockerfile
+    container_name: trading_websocket_listener
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      # Database connections
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+
+      # Bybit WebSocket (all bots share same listener)
+      - BYBIT_API_KEY=${BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      - BYBIT_DEMO=${BYBIT_DEMO:-true}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
+
+      # Which streams to listen to
+      - ENABLE_EXECUTION_STREAM=true
+      - ENABLE_ORDER_STREAM=true
+      - ENABLE_POSITION_STREAM=true
+
+      # Logging
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./websocket_listener/logs:/app/logs
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # SHORTSELLER BOT
+  # ========================================
+  shortseller:
+    build:
+      context: ./shortseller
+      dockerfile: Dockerfile
+    container_name: shortseller_trading
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      websocket_listener:
+        condition: service_started
+    environment:
+      # Bot identification
+      - BOT_ID=shortseller_001
+
+      # Database connections (read from Redis, write via WebSocket listener)
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+      - REDIS_DB=0
+
+      # OPTIONAL: Direct PostgreSQL for queries (not for writes)
+      - POSTGRES_HOST=pgbouncer
+      - POSTGRES_PORT=6432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+
+      # Bybit API
+      - BYBIT_API_KEY=${SHORTSELLER_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${SHORTSELLER_BYBIT_API_SECRET}
+      - BYBIT_DEMO=${BYBIT_DEMO:-true}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
+
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${SHORTSELLER_TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHANNEL_ID=${SHORTSELLER_TELEGRAM_CHANNEL_ID}
+    volumes:
+      - ./shortseller/logs:/app/logs
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "start_trading.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ========================================
+  # LXALGO BOT
+  # ========================================
+  lxalgo:
+    build:
+      context: ./lxalgo
+      dockerfile: Dockerfile
+    container_name: lxalgo_trading
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      websocket_listener:
+        condition: service_started
+    environment:
+      - BOT_ID=lxalgo_001
+
+      # Database
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+      - REDIS_DB=1
+      - POSTGRES_HOST=pgbouncer
+      - POSTGRES_PORT=6432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+
+      # Bybit API
+      - BYBIT_API_KEY=${LXALGO_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${LXALGO_BYBIT_API_SECRET}
+    volumes:
+      - ./lxalgo:/app
+      - lxalgo_logs:/app/logs
+    command: ["python", "main.py"]
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "main.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 900m
+
+  # ========================================
+  # MOMENTUM BOT
+  # ========================================
+  momentum:
+    build:
+      context: ./momentum
+      dockerfile: Dockerfile
+    container_name: momentum_trading
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      websocket_listener:
+        condition: service_started
+    environment:
+      - BOT_ID=momentum_001
+
+      # Database (PostgreSQL instead of SQLite)
+      - USE_POSTGRES=true
+      - POSTGRES_HOST=pgbouncer
+      - POSTGRES_PORT=6432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+      - REDIS_DB=2
+
+      # Bybit API
+      - BYBIT_API_KEY=${MOMENTUM_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
+    volumes:
+      - ./momentum/logs:/app/logs
+      - momentum_data:/app/data
+    command: ["python", "trading_system.py"]
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "pgrep", "-f", "trading_system.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 900m
+
+  # ========================================
+  # TELEGRAM COMMAND CENTER
+  # ========================================
+  telegram_manager:
+    build:
+      context: ./telegram_manager
+      dockerfile: Dockerfile
+    container_name: telegram_c2
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      # Database - Connect directly to postgres (pgbouncer has DNS issues)
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+
+      # Telegram
+      - TELEGRAM_BOT_TOKEN=${C2_TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_ADMIN_IDS=${C2_TELEGRAM_ADMIN_IDS}
+
+      # Docker access for bot control
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./telegram_manager/logs:/app/logs
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 256m
+
+  # ========================================
+  # TRADE SYNC SERVICE - Sync completed trades from Bybit
+  # ========================================
+  trade_sync_service:
+    build:
+      context: ./trade_sync_service
+      dockerfile: Dockerfile
+    container_name: trade_sync_service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      # Database connections
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+
+      # Redis
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+
+      # Bybit API (reads from /app/.env inside container for per-bot keys)
+      - BYBIT_DEMO=${BYBIT_DEMO:-true}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
+
+      # Logging
+      - LOG_LEVEL=INFO
+      - LOG_FILE=logs/sync.log
+    volumes:
+      - ./trade_sync_service/logs:/app/logs
+    networks:
+      - trading-network
+    # Run continuous hourly sync
+    command: ["python", "main.py", "run"]
+    healthcheck:
+      test: ["CMD", "python", "main.py", "test"]
+      interval: 5m
+      timeout: 30s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    mem_limit: 512m
+
+  # ========================================
+  # POSTGRES BACKUP SERVICE
+  # ========================================
+  postgres_backup:
+    image: prodrigestivill/postgres-backup-local:15-alpine
+    container_name: trading_postgres_backup
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: trading_db
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
+      SCHEDULE: "0 2 * * *"  # Daily at 2 AM
+      BACKUP_KEEP_DAYS: 30
+      BACKUP_KEEP_WEEKS: 12
+      BACKUP_KEEP_MONTHS: 12
+    volumes:
+      - ./database/backups/postgres:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
+
+# ========================================
+# NETWORKS
+# ========================================
+networks:
+  trading-network:
+    driver: bridge
+
+# ========================================
+# VOLUMES
+# ========================================
+volumes:
+  postgres_data:
+    name: trading_postgres_data
+  redis_data:
+    name: trading_redis_data
+  lxalgo_logs:
+    name: lxalgo_logs
+  momentum_data:
+    name: momentum_data
