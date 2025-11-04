@@ -1,0 +1,9 @@
+[submodule "strategies/lxalgo"]
+	path = strategies/lxalgo
+	url = https://github.com/LiamX-Labs/lxalgo.git
+[submodule "strategies/momentum"]
+	path = strategies/momentum
+	url = https://github.com/LiamX-Labs/apex-momentum-trading.git
+[submodule "strategies/shortseller"]
+	path = strategies/shortseller
+	url = https://github.com/LiamX-Labs/shortseller.git
