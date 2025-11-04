@@ -184,7 +184,7 @@ services:
   # ========================================
   shortseller:
     build:
-      context: ./shortseller
+      context: ./strategies/shortseller
       dockerfile: Dockerfile
     container_name: shortseller_trading
     restart: unless-stopped
@@ -222,7 +222,7 @@ services:
       - TELEGRAM_BOT_TOKEN=${SHORTSELLER_TELEGRAM_BOT_TOKEN}
       - TELEGRAM_CHANNEL_ID=${SHORTSELLER_TELEGRAM_CHANNEL_ID}
     volumes:
-      - ./shortseller/logs:/app/logs
+      - ./strategies/shortseller/logs:/app/logs
     networks:
       - trading-network
     healthcheck:
@@ -241,7 +241,7 @@ services:
   # ========================================
   lxalgo:
     build:
-      context: ./lxalgo
+      context: ./strategies/lxalgo
       dockerfile: Dockerfile
     container_name: lxalgo_trading
     restart: unless-stopped
@@ -270,7 +270,7 @@ services:
       - BYBIT_API_KEY=${LXALGO_BYBIT_API_KEY}
       - BYBIT_API_SECRET=${LXALGO_BYBIT_API_SECRET}
     volumes:
-      - ./lxalgo:/app
+      - ./strategies/lxalgo:/app
       - lxalgo_logs:/app/logs
     command: ["python", "main.py"]
     networks:
@@ -292,7 +292,7 @@ services:
   # ========================================
   momentum:
     build:
-      context: ./momentum
+      context: ./strategies/momentum
       dockerfile: Dockerfile
     container_name: momentum_trading
     restart: unless-stopped
@@ -322,7 +322,7 @@ services:
       - BYBIT_API_KEY=${MOMENTUM_BYBIT_API_KEY}
       - BYBIT_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
     volumes:
-      - ./momentum/logs:/app/logs
+      - ./strategies/momentum/logs:/app/logs
       - momentum_data:/app/data
     command: ["python", "trading_system.py"]
     networks:
