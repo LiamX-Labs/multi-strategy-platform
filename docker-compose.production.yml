@@ -223,6 +223,7 @@ services:
       - TELEGRAM_CHANNEL_ID=${SHORTSELLER_TELEGRAM_CHANNEL_ID}
     volumes:
       - ./strategies/shortseller/logs:/app/logs
+      - ./shared:/app/shared:ro
     networks:
       - trading-network
     healthcheck:
@@ -272,7 +273,8 @@ services:
     volumes:
       - ./strategies/lxalgo:/app
       - lxalgo_logs:/app/logs
-    command: ["python", "main.py"]
+      - ./shared:/app/shared:ro
+    command: ["python", "src/main.py"]
     networks:
       - trading-network
     healthcheck:
@@ -318,12 +320,15 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
       - REDIS_DB=2
 
-      # Bybit API
-      - BYBIT_API_KEY=${MOMENTUM_BYBIT_API_KEY}
-      - BYBIT_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
+      # Bybit API (Momentum uses different variable names)
+      - BYBIT_DEMO_API_KEY=${MOMENTUM_BYBIT_API_KEY}
+      - BYBIT_DEMO_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
+      - BYBIT_LIVE_API_KEY=${MOMENTUM_BYBIT_API_KEY}
+      - BYBIT_LIVE_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
     volumes:
       - ./strategies/momentum/logs:/app/logs
       - momentum_data:/app/data
+      - ./shared:/app/shared:ro
     command: ["python", "trading_system.py"]
     networks:
       - trading-network
