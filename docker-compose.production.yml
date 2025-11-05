@@ -274,7 +274,8 @@ services:
       - ./strategies/lxalgo:/app
       - lxalgo_logs:/app/logs
       - ./shared:/app/shared:ro
-    command: ["python", "src/main.py"]
+    working_dir: /app
+    command: ["python", "-m", "src.main"]
     networks:
       - trading-network
     healthcheck:
@@ -325,6 +326,9 @@ services:
       - BYBIT_DEMO_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
       - BYBIT_LIVE_API_KEY=${MOMENTUM_BYBIT_API_KEY}
       - BYBIT_LIVE_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
+
+      # Telegram (optional - disable if not configured)
+      - TELEGRAM_ENABLED=false
     volumes:
       - ./strategies/momentum/logs:/app/logs
       - momentum_data:/app/data
