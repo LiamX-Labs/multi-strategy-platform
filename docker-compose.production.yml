@@ -68,7 +68,7 @@ services:
     container_name: trading_pgbouncer
     restart: unless-stopped
     environment:
-      DATABASES_HOST: postgres
+      DATABASES_HOST: trading_postgres
       DATABASES_PORT: 5432
       DATABASES_USER: trading_user
       DATABASES_PASSWORD: ${POSTGRES_PASSWORD:-change_this_password}
@@ -205,9 +205,9 @@ services:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
       - REDIS_DB=0
 
-      # OPTIONAL: Direct PostgreSQL for queries (not for writes)
-      - POSTGRES_HOST=pgbouncer
-      - POSTGRES_PORT=6432
+      # Direct PostgreSQL connection (pgbouncer has DNS issues)
+      - POSTGRES_HOST=trading_postgres
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=trading_db
       - POSTGRES_USER=trading_user
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
@@ -261,8 +261,8 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
       - REDIS_DB=1
-      - POSTGRES_HOST=pgbouncer
-      - POSTGRES_PORT=6432
+      - POSTGRES_HOST=trading_postgres
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=trading_db
       - POSTGRES_USER=trading_user
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
@@ -311,8 +311,8 @@ services:
 
       # Database (PostgreSQL instead of SQLite)
       - USE_POSTGRES=true
-      - POSTGRES_HOST=pgbouncer
-      - POSTGRES_PORT=6432
+      - POSTGRES_HOST=trading_postgres
+      - POSTGRES_PORT=5432
       - POSTGRES_DB=trading_db
       - POSTGRES_USER=trading_user
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
