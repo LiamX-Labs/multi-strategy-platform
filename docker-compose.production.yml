@@ -21,8 +21,6 @@
 #
 # ========================================
 
-version: '3.8'
-
 services:
   # ========================================
   # POSTGRESQL - Permanent Fills History
@@ -121,16 +119,17 @@ services:
         max-file: "2"
 
   # ========================================
-  # WEBSOCKET LISTENER - Bybit Private Streams
+  # WEBSOCKET LISTENERS - Bybit Private Streams (One per bot)
   # ========================================
-  # This is THE CRITICAL SERVICE
-  # Listens to execution, order, position streams
-  # Updates PostgreSQL (fills) and Redis (live state)
-  websocket_listener:
+  # CRITICAL: Each bot needs its own WebSocket listener
+  # Bybit only sends execution events to WebSocket authenticated with SAME API key as order
+
+  # LXAlgo WebSocket Listener
+  websocket_listener_lxalgo:
     build:
       context: ./websocket_listener
       dockerfile: Dockerfile
-    container_name: trading_websocket_listener
+    container_name: trading_websocket_lxalgo
     restart: unless-stopped
     depends_on:
       postgres:
@@ -150,21 +149,123 @@ services:
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
 
-      # Bybit WebSocket (all bots share same listener)
-      - BYBIT_API_KEY=${BYBIT_API_KEY}
-      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
+      # LXAlgo Bybit API
+      - BYBIT_API_KEY=${LXALGO_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${LXALGO_BYBIT_API_SECRET}
       - BYBIT_DEMO=${BYBIT_DEMO:-true}
       - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
 
-      # Which streams to listen to
+      # Streams
       - ENABLE_EXECUTION_STREAM=true
       - ENABLE_ORDER_STREAM=true
       - ENABLE_POSITION_STREAM=true
-
-      # Logging
       - LOG_LEVEL=INFO
     volumes:
-      - ./websocket_listener/logs:/app/logs
+      - ./websocket_listener/logs/lxalgo:/app/logs
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ShortSeller WebSocket Listener
+  websocket_listener_shortseller:
+    build:
+      context: ./websocket_listener
+      dockerfile: Dockerfile
+    container_name: trading_websocket_shortseller
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      # Database connections
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+
+      # ShortSeller Bybit API
+      - BYBIT_API_KEY=${SHORTSELLER_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${SHORTSELLER_BYBIT_API_SECRET}
+      - BYBIT_DEMO=${BYBIT_DEMO:-true}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
+
+      # Streams
+      - ENABLE_EXECUTION_STREAM=true
+      - ENABLE_ORDER_STREAM=true
+      - ENABLE_POSITION_STREAM=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./websocket_listener/logs/shortseller:/app/logs
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import sys; sys.exit(0)'"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Momentum WebSocket Listener
+  websocket_listener_momentum:
+    build:
+      context: ./websocket_listener
+      dockerfile: Dockerfile
+    container_name: trading_websocket_momentum
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      pgbouncer:
+        condition: service_started
+    environment:
+      # Database connections
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=trading_db
+      - POSTGRES_USER=trading_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-change_this_password}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-change_this_password}
+
+      # Momentum Bybit API
+      - BYBIT_API_KEY=${MOMENTUM_BYBIT_API_KEY}
+      - BYBIT_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
+      - BYBIT_DEMO=${BYBIT_DEMO:-true}
+      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
+
+      # Streams
+      - ENABLE_EXECUTION_STREAM=true
+      - ENABLE_ORDER_STREAM=true
+      - ENABLE_POSITION_STREAM=true
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./websocket_listener/logs/momentum:/app/logs
     networks:
       - trading-network
     healthcheck:
@@ -193,7 +294,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      websocket_listener:
+      websocket_listener_shortseller:
         condition: service_started
     environment:
       # Bot identification
@@ -227,10 +328,11 @@ services:
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "start_trading.py"]
+      test: ["CMD-SHELL", "test -d /proc/1 && grep -q python /proc/1/cmdline || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -251,7 +353,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      websocket_listener:
+      websocket_listener_lxalgo:
         condition: service_started
     environment:
       - BOT_ID=lxalgo_001
@@ -279,10 +381,11 @@ services:
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "main.py"]
+      test: ["CMD-SHELL", "test -d /proc/1 && grep -q python /proc/1/cmdline || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -304,7 +407,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      websocket_listener:
+      websocket_listener_momentum:
         condition: service_started
     environment:
       - BOT_ID=momentum_001
@@ -327,8 +430,10 @@ services:
       - BYBIT_LIVE_API_KEY=${MOMENTUM_BYBIT_API_KEY}
       - BYBIT_LIVE_API_SECRET=${MOMENTUM_BYBIT_API_SECRET}
 
-      # Telegram (optional - disable if not configured)
-      - TELEGRAM_ENABLED=false
+      # Telegram
+      - TELEGRAM_ENABLED=true
+      - TELEGRAM_BOT_TOKEN=${MOMENTUM_TELEGRAM_BOT_TOKEN}
+      - TELEGRAM_CHAT_ID=${MOMENTUM_TELEGRAM_CHANNEL_ID}
     volumes:
       - ./strategies/momentum/logs:/app/logs
       - momentum_data:/app/data
@@ -337,10 +442,11 @@ services:
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "pgrep", "-f", "trading_system.py"]
+      test: ["CMD-SHELL", "test -d /proc/1 && grep -q python /proc/1/cmdline || exit 1"]
       interval: 60s
       timeout: 10s
       retries: 3
+      start_period: 30s
     logging:
       driver: "json-file"
       options:
@@ -374,6 +480,11 @@ services:
       # Telegram
       - TELEGRAM_BOT_TOKEN=${C2_TELEGRAM_BOT_TOKEN}
       - TELEGRAM_ADMIN_IDS=${C2_TELEGRAM_ADMIN_IDS}
+
+      # Security
+      - COMMAND_CENTER_ACCESS_CODE=${C2_ACCESS_CODE:-ALPHA2025}
+      - SESSION_TIMEOUT_MINUTES=${C2_SESSION_TIMEOUT:-30}
+      - AUTH_MESSAGE_DELETE_SECONDS=${C2_MESSAGE_DELETE_SECONDS:-20}
 
       # Docker access for bot control
       - DOCKER_HOST=unix:///var/run/docker.sock

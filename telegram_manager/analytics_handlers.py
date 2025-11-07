@@ -391,10 +391,20 @@ async def quick_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pnl_today = trading_today.get('total_pnl', 0)
         emoji = "🟢" if pnl_today and pnl_today > 0 else "🔴"
 
+        # Show fills if no completed trades yet
+        closed = trading_today.get('closed_trades', 0)
+        fills = trading_today.get('filled_trades', 0)
+
         report += f"*TODAY*\n"
-        report += f"├─ Trades: {trading_today.get('total_trades', 0)}\n"
-        report += f"├─ W/L: {trading_today.get('winning_trades', 0)}/{trading_today.get('losing_trades', 0)}\n"
-        report += f"{emoji} P&L: ${format_pnl(pnl_today)}\n\n"
+        if closed > 0:
+            report += f"├─ Trades: {closed}\n"
+            report += f"├─ W/L: {trading_today.get('winning_trades', 0)}/{trading_today.get('losing_trades', 0)}\n"
+            report += f"{emoji} P&L: ${format_pnl(pnl_today)}\n\n"
+        else:
+            # Show fills (entries) instead
+            report += f"├─ Fills: {fills}\n"
+            report += f"├─ Completed: 0\n"
+            report += f"⚪ P&L: Pending\n\n"
 
     # Positions
     report += f"*POSITIONS*\n"

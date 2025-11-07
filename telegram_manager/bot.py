@@ -56,6 +56,14 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 ADMIN_IDS = [int(id.strip()) for id in os.getenv('TELEGRAM_ADMIN_IDS', '').split(',') if id.strip()]
 
+# Security Configuration
+ACCESS_CODE = os.getenv('COMMAND_CENTER_ACCESS_CODE', 'ALPHA2025')  # Default code, should be changed
+SESSION_TIMEOUT = int(os.getenv('SESSION_TIMEOUT_MINUTES', '30'))  # Session expires after 30 minutes
+MESSAGE_DELETE_DELAY = int(os.getenv('AUTH_MESSAGE_DELETE_SECONDS', '20'))  # Auto-delete auth messages after N seconds
+
+# Active sessions: {user_id: last_activity_timestamp}
+active_sessions = {}
+
 # Docker client
 docker_client = docker.from_env()
 
@@ -116,6 +124,77 @@ ALL_SYSTEMS = list(SYSTEMS.keys())
 # AUTHORIZATION & SECURITY
 # ========================================
 
+def is_session_active(user_id: int) -> bool:
+    """Check if user has an active session"""
+    if user_id not in active_sessions:
+        return False
+
+    # Check if session has expired
+    last_activity = active_sessions[user_id]
+    elapsed_minutes = (datetime.now() - last_activity).total_seconds() / 60
+
+    if elapsed_minutes > SESSION_TIMEOUT:
+        # Session expired
+        del active_sessions[user_id]
+        return False
+
+    return True
+
+
+def refresh_session(user_id: int):
+    """Refresh user session timestamp"""
+    active_sessions[user_id] = datetime.now()
+
+
+def create_session(user_id: int):
+    """Create a new session for user"""
+    active_sessions[user_id] = datetime.now()
+    logger.info(f"✓ SESSION CREATED: User ID {user_id}")
+
+
+def end_session(user_id: int):
+    """Terminate user session"""
+    if user_id in active_sessions:
+        del active_sessions[user_id]
+        logger.info(f"✓ SESSION ENDED: User ID {user_id}")
+
+
+def requires_authentication(func):
+    """Decorator that requires both authorization and active session"""
+    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        user_id = update.effective_user.id
+        username = update.effective_user.username or "Unknown"
+
+        # First check: Is user in authorized list?
+        if user_id not in ADMIN_IDS:
+            await update.message.reply_text(
+                "⛔ *ACCESS DENIED*\n\n"
+                "Security clearance required.\n"
+                "Unauthorized access attempt logged.",
+                parse_mode='Markdown'
+            )
+            logger.warning(f"❌ UNAUTHORIZED ACCESS: User {username} (ID: {user_id})")
+            return
+
+        # Second check: Does user have an active session?
+        if not is_session_active(user_id):
+            await update.message.reply_text(
+                "🔐 *SESSION EXPIRED*\n\n"
+                "Your session has expired or you haven't authenticated yet.\n"
+                "Please use `/auth <access_code>` to authenticate.\n\n"
+                f"Example: `/auth {ACCESS_CODE[:4]}****`",
+                parse_mode='Markdown'
+            )
+            logger.warning(f"⚠️ SESSION EXPIRED: User {username} (ID: {user_id})")
+            return
+
+        # Refresh session on each command
+        refresh_session(user_id)
+        logger.info(f"✓ AUTHENTICATED: {username} (ID: {user_id}) - Command: {update.message.text}")
+        return await func(update, context)
+    return wrapper
+
+
 def authorized_only(func):
     """Security clearance check - Restrict to authorized operators only"""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -141,7 +220,7 @@ def authorized_only(func):
 # CORE COMMAND HANDLERS
 # ========================================
 
-@authorized_only
+@requires_authentication
 async def command_center(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Main command center interface"""
     keyboard = [
@@ -181,7 +260,7 @@ async def command_center(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-@authorized_only
+@requires_authentication
 async def sitrep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Situation Report - Full system status"""
     message = await update.message.reply_text("🔍 *GENERATING SITREP...*", parse_mode='Markdown')
@@ -232,7 +311,7 @@ async def sitrep(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(status_text, parse_mode='Markdown')
 
 
-@authorized_only
+@requires_authentication
 async def deploy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deploy (start) specific system"""
     if len(context.args) < 1:
@@ -254,7 +333,7 @@ async def deploy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await execute_system_action(update, system_id, 'deploy')
 
 
-@authorized_only
+@requires_authentication
 async def terminate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Terminate (stop) specific system"""
     if len(context.args) < 1:
@@ -276,7 +355,7 @@ async def terminate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await execute_system_action(update, system_id, 'terminate')
 
 
-@authorized_only
+@requires_authentication
 async def reboot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reboot (restart) specific system"""
     if len(context.args) < 1:
@@ -298,7 +377,7 @@ async def reboot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await execute_system_action(update, system_id, 'reboot')
 
 
-@authorized_only
+@requires_authentication
 async def diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """System diagnostics - detailed view"""
     if len(context.args) < 1:
@@ -384,7 +463,7 @@ async def diagnostics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Diagnostics error for {system_id}: {e}")
 
 
-@authorized_only
+@requires_authentication
 async def intel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Get system logs (intelligence)"""
     if len(context.args) < 1:
@@ -435,7 +514,7 @@ async def intel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Intel error for {system_id}: {e}")
 
 
-@authorized_only
+@requires_authentication
 async def execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Execute command in system"""
     if len(context.args) < 2:
@@ -485,7 +564,7 @@ async def execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Execution error on {system_id}: {e}")
 
 
-@authorized_only
+@requires_authentication
 async def killswitch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Emergency shutdown - terminate all trading systems"""
     # Confirmation required for killswitch
@@ -530,11 +609,16 @@ async def killswitch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(result_text, parse_mode='Markdown')
 
 
-@authorized_only
+@requires_authentication
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Display command reference"""
     help_text = """🎯 *COMMAND CENTER REFERENCE*
 ━━━━━━━━━━━━━━━━━━━━━
+
+*AUTHENTICATION:*
+`/auth <code>` - Authenticate Session
+`/logout` - End Session
+`/status` - Check Session Status
 
 *SITUATION AWARENESS:*
 `/cc` - Command Center (Main Menu)
@@ -598,6 +682,154 @@ Infrastructure:
 `/trades charlie 20`"""
 
     await update.message.reply_text(help_text, parse_mode='Markdown')
+
+
+# ========================================
+# AUTHENTICATION COMMANDS
+# ========================================
+
+async def auth_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Authenticate user with access code"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+
+    # Immediately delete the user's message containing the access code for security
+    try:
+        await update.message.delete()
+        logger.info(f"🗑️ Deleted auth message from {username} (ID: {user_id})")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not delete auth message: {e}")
+
+    # Check if user is authorized
+    if user_id not in ADMIN_IDS:
+        response = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⛔ *ACCESS DENIED*\n\n"
+                 "You are not in the authorized operators list.\n\n"
+                 f"_This message will self-destruct in {MESSAGE_DELETE_DELAY} seconds._",
+            parse_mode='Markdown'
+        )
+        logger.warning(f"❌ UNAUTHORIZED AUTH ATTEMPT: User {username} (ID: {user_id})")
+
+        # Delete the response after configured delay
+        await asyncio.sleep(MESSAGE_DELETE_DELAY)
+        try:
+            await response.delete()
+        except:
+            pass
+        return
+
+    # Check if code was provided
+    if not context.args:
+        response = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="🔐 *AUTHENTICATION REQUIRED*\n\n"
+                 "Usage: `/auth <access_code>`\n\n"
+                 "Contact your administrator for the access code.\n\n"
+                 f"_This message will self-destruct in {MESSAGE_DELETE_DELAY} seconds._",
+            parse_mode='Markdown'
+        )
+        # Delete instruction message after configured delay
+        await asyncio.sleep(MESSAGE_DELETE_DELAY)
+        try:
+            await response.delete()
+        except:
+            pass
+        return
+
+    provided_code = ' '.join(context.args)
+
+    # Verify access code
+    if provided_code == ACCESS_CODE:
+        create_session(user_id)
+        response = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✅ *AUTHENTICATION SUCCESSFUL*\n\n"
+                 f"Welcome, {username}!\n"
+                 f"Session active for {SESSION_TIMEOUT} minutes.\n\n"
+                 "Use `/cc` to access Command Center.\n"
+                 "Use `/logout` to end your session.\n\n"
+                 f"_This message will self-destruct in {MESSAGE_DELETE_DELAY} seconds._",
+            parse_mode='Markdown'
+        )
+        logger.info(f"✓ AUTHENTICATION SUCCESS: User {username} (ID: {user_id})")
+
+        # Delete success message after configured delay
+        await asyncio.sleep(MESSAGE_DELETE_DELAY)
+        try:
+            await response.delete()
+        except:
+            pass
+    else:
+        response = await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="❌ *AUTHENTICATION FAILED*\n\n"
+                 "Invalid access code.\n"
+                 "Access attempt logged.\n\n"
+                 f"_This message will self-destruct in {MESSAGE_DELETE_DELAY} seconds._",
+            parse_mode='Markdown'
+        )
+        logger.warning(f"❌ FAILED AUTH ATTEMPT: User {username} (ID: {user_id}) - Wrong code")
+
+        # Delete failure message after configured delay
+        await asyncio.sleep(MESSAGE_DELETE_DELAY)
+        try:
+            await response.delete()
+        except:
+            pass
+
+
+async def logout_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Logout and end session"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+
+    if user_id in active_sessions:
+        end_session(user_id)
+        await update.message.reply_text(
+            "✅ *LOGOUT SUCCESSFUL*\n\n"
+            "Your session has been terminated.\n"
+            "Use `/auth <access_code>` to login again.",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "ℹ️ *NO ACTIVE SESSION*\n\n"
+            "You were not logged in.",
+            parse_mode='Markdown'
+        )
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check session status"""
+    user_id = update.effective_user.id
+    username = update.effective_user.username or "Unknown"
+
+    if user_id not in ADMIN_IDS:
+        await update.message.reply_text(
+            "⛔ *ACCESS DENIED*",
+            parse_mode='Markdown'
+        )
+        return
+
+    if is_session_active(user_id):
+        last_activity = active_sessions[user_id]
+        elapsed_minutes = (datetime.now() - last_activity).total_seconds() / 60
+        remaining_minutes = SESSION_TIMEOUT - elapsed_minutes
+
+        await update.message.reply_text(
+            f"✅ *SESSION ACTIVE*\n\n"
+            f"User: {username}\n"
+            f"Session expires in: {int(remaining_minutes)} minutes\n\n"
+            "Use any command to refresh session.",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text(
+            "🔐 *NO ACTIVE SESSION*\n\n"
+            "Use `/auth <access_code>` to authenticate.",
+            parse_mode='Markdown'
+        )
 
 
 # ========================================
@@ -1285,7 +1517,7 @@ def calculate_cpu_percent(stats):
 # MASS OPERATION COMMANDS
 # ========================================
 
-@authorized_only
+@requires_authentication
 async def deploy_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Deploy all systems via command"""
     message = await update.message.reply_text("🚀 *INITIATING MASS DEPLOYMENT...*", parse_mode='Markdown')
@@ -1307,7 +1539,7 @@ async def deploy_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(result_text, parse_mode='Markdown')
 
 
-@authorized_only
+@requires_authentication
 async def terminate_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Terminate all systems via command"""
     message = await update.message.reply_text("🛑 *INITIATING MASS SHUTDOWN...*", parse_mode='Markdown')
@@ -1329,7 +1561,7 @@ async def terminate_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await message.edit_text(result_text, parse_mode='Markdown')
 
 
-@authorized_only
+@requires_authentication
 async def reboot_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reboot all systems via command"""
     message = await update.message.reply_text("🔄 *INITIATING MASS REBOOT...*", parse_mode='Markdown')
@@ -1373,7 +1605,12 @@ def main():
     # Create application
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Command handlers
+    # Authentication handlers (no session required)
+    application.add_handler(CommandHandler("auth", auth_command))
+    application.add_handler(CommandHandler("logout", logout_command))
+    application.add_handler(CommandHandler("status", status_command))
+
+    # Command handlers (require authentication)
     application.add_handler(CommandHandler("cc", command_center))
     application.add_handler(CommandHandler("start", command_center))
     application.add_handler(CommandHandler("sitrep", sitrep))

@@ -30,10 +30,10 @@ class DatabaseAnalytics:
         self.redis_client = None
 
         # PostgreSQL connection parameters
-        # Production uses pgbouncer (port 6432) for connection pooling
+        # Connect directly to PostgreSQL (PgBouncer has DNS issues)
         self.pg_params = {
-            'host': os.getenv('POSTGRES_HOST', 'pgbouncer'),
-            'port': int(os.getenv('POSTGRES_PORT', 6432)),
+            'host': os.getenv('POSTGRES_HOST', 'trading_postgres'),
+            'port': int(os.getenv('POSTGRES_PORT', 5432)),
             'database': os.getenv('POSTGRES_DB', 'trading_db'),
             'user': os.getenv('POSTGRES_USER', 'trading_user'),
             'password': os.getenv('POSTGRES_PASSWORD', ''),
@@ -95,8 +95,7 @@ class DatabaseAnalytics:
             SUM(initial_capital) as total_capital,
             COUNT(*) FILTER (WHERE status = 'active') as active_bots,
             COUNT(*) FILTER (WHERE status = 'paused') as paused_bots
-        FROM trading.bots
-        WHERE deployment_mode = 'live';
+        FROM trading.bots;
         """
 
         result = self._execute_query(query)
@@ -133,7 +132,6 @@ class DatabaseAnalytics:
                 ROUND((current_equity - initial_capital) / initial_capital * 100, 2) as return_pct,
                 last_heartbeat
             FROM trading.bots
-            WHERE deployment_mode = 'live'
             ORDER BY bot_type, bot_id;
             """
             params = None
@@ -216,7 +214,26 @@ class DatabaseAnalytics:
         result = self._execute_query(query, params)
         fills_result = self._execute_query(fills_query, fills_params)
 
-        if result:
+        # Always count fills to show activity even if no completed trades
+        if bot_id:
+            total_fills_query = """
+            SELECT COUNT(*) as fill_count
+            FROM trading.fills
+            WHERE bot_id = %s AND exec_time >= %s;
+            """
+            total_fills_params = (bot_id, date_filter)
+        else:
+            total_fills_query = """
+            SELECT COUNT(*) as fill_count
+            FROM trading.fills
+            WHERE exec_time >= %s;
+            """
+            total_fills_params = (date_filter,)
+
+        fills_count_result = self._execute_query(total_fills_query, total_fills_params)
+        total_fills = fills_count_result[0].get('fill_count', 0) if fills_count_result else 0
+
+        if result and result[0].get('total_trades'):
             summary = dict(result[0])
             # Add open trades count
             if fills_result:
@@ -235,7 +252,22 @@ class DatabaseAnalytics:
             else:
                 summary['win_rate'] = 0.0
             return summary
-        return {}
+        else:
+            # No completed trades, but show fills activity
+            return {
+                'total_trades': 0,
+                'winning_trades': 0,
+                'losing_trades': 0,
+                'closed_trades': 0,
+                'total_pnl': 0,
+                'avg_pnl': 0,
+                'max_win': 0,
+                'max_loss': 0,
+                'total_fees': 0,
+                'open_trades': 0,
+                'filled_trades': total_fills,  # Show fill activity
+                'win_rate': 0.0
+            }
 
     def get_active_positions(self, bot_id: str = None) -> List[Dict]:
         """Get all active positions from the positions table"""
