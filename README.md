@@ -458,6 +458,36 @@ MOMENTUM_BYBIT_API_KEY = os.getenv('MOMENTUM_BYBIT_API_KEY')
 
 **Purpose**: Remote monitoring and management via Telegram bot
 
+**LX Command Center in Action**:
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/command-center-menu.png" alt="Command Center menu" width="100%"><br>
+      <sub>Authentication &amp; tactical command menu</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/quick-status.png" alt="Quick status report" width="100%"><br>
+      <sub>Quick status — bots, equity &amp; positions</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/situation-report.png" alt="Tactical situation report" width="100%"><br>
+      <sub>Tactical situation report — all systems operational</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/trading-systems-control.png" alt="Trading systems control" width="100%"><br>
+      <sub>Per-system deploy / terminate / reboot controls</sub>
+    </td>
+    <td align="center" width="33%">
+      <img src="docs/screenshots/kill-switch.png" alt="Kill switch report" width="100%"><br>
+      <sub>Kill switch — emergency shutdown of all systems</sub>
+    </td>
+    <td width="33%"></td>
+  </tr>
+</table>
+
 **Available Commands**:
 
 ```
